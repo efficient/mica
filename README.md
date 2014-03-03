@@ -16,7 +16,7 @@ Hardware Requirements
 Software Requrements
 --------------------
 
- * linux x84_64 >= 3.2.0
+ * linux x86_64 >= 3.2.0
  * gcc >= 4.6.0
  * Python >= 2.7.0
  * Intel DPDK >= 1.5.0
