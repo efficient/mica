@@ -1,6 +1,11 @@
+MICA
+====
+
+A fast in-memory key-value store.
+
 
 Hardware Requirements
-=====================
+---------------------
 
  * Dual CPU system
  * Intel 10 GbE NICs
@@ -9,7 +14,7 @@ Hardware Requirements
 
 
 Software Requrements
-====================
+--------------------
 
  * linux x84_64 >= 3.2.0
  * gcc >= 4.6.0
@@ -21,7 +26,7 @@ Software Requrements
 
 
 Executables
-===========
+-----------
 
  * build/netbench_server: MICA server in cache mode (use with netbench_client)
  * build/netbench_server_store: MICA server in store mode (use with netbench_client)
@@ -36,7 +41,7 @@ Executables
 
 
 Compiling Executables
-=====================
+---------------------
 
 	# unpack DPDK as "DPDK" to the directory containing mica
 	$ cd mica/build
@@ -46,7 +51,7 @@ Compiling Executables
 
 
 Generating Configuration Files
-==============================
+------------------------------
 
 	# conf_* files determine how MICA uses system resources. build/gen_confs.py generates a preset of configuration files for a 16-core server and 12-core clients
 	# in mica
@@ -55,7 +60,7 @@ Generating Configuration Files
 
 
 Running a Server
-================
+----------------
 
 	# in mica/build
 	$ sudo ./netbench_server conf_machines_DATASET_CMODE_0.5 server 0 0 conf_prepopulation_empty
@@ -63,15 +68,15 @@ Running a Server
 
 
 Running a Client (e.g., client0)
-================================
+--------------------------------
 
 	# in mica/build
 	$ sudo ./netbench_client conf_machines_DATASET_CMODE_0.5 client0 0 0 conf_workload_DATASET_SKEW_GET_PUT_0.00_1
 	# DATASET=0,1,2 (specifies the dataset to use); SKEW=uniform,skewed,single (specifies the workload skew); GET/PUT=0.00,0.50,0.95,1.00 (specifies the read/write ratio)
 
 
-Running a local microbenchmark
-==============================
+Running a Local Microbenchmark
+------------------------------
 
 	# in mica/build
 	$ sudo ./microbench CMODE SKEWNESS 0.5
@@ -79,7 +84,7 @@ Running a local microbenchmark
 
 
 License
-=======
+-------
 
 	Copyright 2014 Carnegie Mellon University
 
