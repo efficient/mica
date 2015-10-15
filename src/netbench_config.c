@@ -83,13 +83,16 @@ mehcached_get_server_conf(const char *filename, const char *server_name)
 				ret = sscanf(buf, "server_thread,%[^,\n]\n", port_ids);
 				if (ret == 1)
 				{
-					char *p = port_ids;
-					while (*p != 0)
+					if (strcmp(port_ids, "-") != 0)
 					{
-						conf->threads[conf->num_threads].port_ids[conf->threads[conf->num_threads].num_ports] = (uint8_t)strtoul(p, &p, 10);
-						conf->threads[conf->num_threads].num_ports++;
-						assert(conf->threads[conf->num_threads].num_ports <= MEHCACHED_MAX_PORTS);
-						if (*p != 0) p++;
+						char *p = port_ids;
+						while (*p != 0)
+						{
+							conf->threads[conf->num_threads].port_ids[conf->threads[conf->num_threads].num_ports] = (uint8_t)strtoul(p, &p, 10);
+							conf->threads[conf->num_threads].num_ports++;
+							assert(conf->threads[conf->num_threads].num_ports <= MEHCACHED_MAX_PORTS);
+							if (*p != 0) p++;
+						}
 					}
 					conf->num_threads++;
 					assert(conf->num_threads <= MEHCACHED_MAX_THREADS);
@@ -354,13 +357,16 @@ mehcached_get_workload_conf(const char *filename, const char *client_name)
 				int ret = sscanf(buf, "workload_thread,%[^,],%[^,],%hhd,%lu,%zu,%zu,%lf,%lf,%lf,%lf,%hhu,%lu,%lf\n", port_ids, server_name, &partition_mode, &num_items, &key_length, &value_length, &zipf_theta, &get_ratio, &put_ratio, &increment_ratio, &batch_size, &num_operations, &duration);
 				if (ret == 13)
 				{
-					char *p = port_ids;
-					while (*p != 0)
+					if (strcmp(port_ids, "-") != 0)
 					{
-						conf->threads[conf->num_threads].port_ids[conf->threads[conf->num_threads].num_ports] = (uint8_t)strtoul(p, &p, 10);
-						conf->threads[conf->num_threads].num_ports++;
-						assert(conf->threads[conf->num_threads].num_ports <= MEHCACHED_MAX_PORTS);
-						if (*p != 0) p++;
+						char *p = port_ids;
+						while (*p != 0)
+						{
+							conf->threads[conf->num_threads].port_ids[conf->threads[conf->num_threads].num_ports] = (uint8_t)strtoul(p, &p, 10);
+							conf->threads[conf->num_threads].num_ports++;
+							assert(conf->threads[conf->num_threads].num_ports <= MEHCACHED_MAX_PORTS);
+							if (*p != 0) p++;
+						}
 					}
 					strcpy(conf->threads[conf->num_threads].server_name, server_name);
 					conf->threads[conf->num_threads].partition_mode = partition_mode;

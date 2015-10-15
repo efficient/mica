@@ -148,7 +148,9 @@ static
 uint16_t
 mehcached_get_partition_id(uint64_t key_hash, uint16_t num_partitions)
 {
-    return (uint16_t)(key_hash >> 48) & (uint16_t)(num_partitions - 1);
+    //return (uint16_t)(key_hash >> 48) & (uint16_t)(num_partitions - 1);
+	// for non power-of-two num_partitions
+    return (uint16_t)(key_hash >> 48) % (uint16_t)num_partitions;
 }
 
 int
@@ -319,7 +321,7 @@ benchmark(const concurrency_mode_t concurrency_mode, double zipf_theta, double m
 
     const size_t num_threads = 16;
     const size_t num_operations = 16 * 1048576;
-    const size_t max_num_operatios_per_thread = num_operations;
+    const size_t max_num_operations_per_thread = num_operations;
 
     const size_t key_length = MEHCACHED_ROUNDUP8(8);
     const size_t value_length = MEHCACHED_ROUNDUP8(8);
@@ -345,7 +347,10 @@ benchmark(const concurrency_mode_t concurrency_mode, double zipf_theta, double m
 
 
     printf("initializing DPDK\n");
-    size_t cpu_mask = (1 << num_threads) - 1;
+    uint64_t cpu_mask = 0;
+    size_t thread_id;
+	for (thread_id = 0; thread_id < num_threads; thread_id++)
+		cpu_mask |= (uint64_t)1 << thread_id;
 	char cpu_mask_str[10];
 	snprintf(cpu_mask_str, sizeof(cpu_mask_str), "%zx", cpu_mask);
 
@@ -372,20 +377,19 @@ benchmark(const concurrency_mode_t concurrency_mode, double zipf_theta, double m
     uint8_t *values = (uint8_t *)mehcached_shm_malloc_striped(value_length * num_items * 2);
     assert(values);
 
-    uint64_t *op_count = (uint64_t *)malloc(sizeof(uint64_t) * max_num_operatios_per_thread);
+    uint64_t *op_count = (uint64_t *)malloc(sizeof(uint64_t) * num_threads);
     assert(op_count);
-    uint8_t **op_types = (uint8_t **)malloc(sizeof(uint8_t *) * max_num_operatios_per_thread);
+    uint8_t **op_types = (uint8_t **)malloc(sizeof(uint8_t *) * num_threads);
     assert(op_types);
-    uint8_t **op_keys = (uint8_t **)malloc(sizeof(uint8_t *) * max_num_operatios_per_thread);
+    uint8_t **op_keys = (uint8_t **)malloc(sizeof(uint8_t *) * num_threads);
     assert(op_keys);
-    uint64_t **op_key_hashes = (uint64_t **)malloc(sizeof(uint64_t *) * max_num_operatios_per_thread);
+    uint64_t **op_key_hashes = (uint64_t **)malloc(sizeof(uint64_t *) * num_threads);
     assert(op_key_hashes);
-    uint16_t **op_key_parts = (uint16_t **)malloc(sizeof(uint16_t *) * max_num_operatios_per_thread);
+    uint16_t **op_key_parts = (uint16_t **)malloc(sizeof(uint16_t *) * num_threads);
     assert(op_key_parts);
-    uint8_t **op_values = (uint8_t **)malloc(sizeof(uint8_t *) * max_num_operatios_per_thread);
+    uint8_t **op_values = (uint8_t **)malloc(sizeof(uint8_t *) * num_threads);
     assert(op_values);
 
-    size_t thread_id;
     for (thread_id = 0; thread_id < num_threads; thread_id++)
     {
         op_types[thread_id] = (uint8_t *)mehcached_shm_malloc_contiguous(num_operations, thread_id);
@@ -566,7 +570,7 @@ benchmark(const concurrency_mode_t concurrency_mode, double zipf_theta, double m
                     thread_id = (owner_thread_id[partition_id] % 2) + (mehcached_rand(&thread_rand_state) % (num_threads / 2)) * 2;
             }
 
-            if (op_count[thread_id] < max_num_operatios_per_thread)
+            if (op_count[thread_id] < max_num_operations_per_thread)
             {
                 op_types[thread_id][op_count[thread_id]] = is_get ? 0 : 1;
                 memcpy(op_keys[thread_id] + key_length * op_count[thread_id], keys + key_length * i, key_length);

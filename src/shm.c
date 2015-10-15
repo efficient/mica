@@ -316,27 +316,81 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 	memset(num_reserved_pages, 0, sizeof(num_reserved_pages));
 	memset(num_freed_pages, 0, sizeof(num_freed_pages));
 
-	for (page_id = 0; page_id < num_allocated_pages; page_id++)
+	bool *used_pages = (bool *)calloc(num_allocated_pages, sizeof(bool));
+	for (numa_node = 0; numa_node < num_numa_nodes; numa_node++)
 	{
-		size_t numa_node = mehcached_shm_pages[page_id].numa_node;
-        void *addr = mehcached_shm_pages[page_id].addr;
-		if (num_reserved_pages[numa_node] < num_pages_per_numa_node)
-        {
-            //printf("reserving page (addr=%p, paddr=%p, numa_node=%zu)\n", addr, mehcached_shm_pages[page_id].paddr, numa_node);
-			num_reserved_pages[numa_node]++;
-            //memset(addr, 0, mehcached_shm_page_size);
-        }
-        else
+		while (true)
 		{
-			//printf("deallocating surplus page %p on numa node %zu\n", addr, numa_node);
+			size_t smallest_region_start = 0;
+			size_t smallest_region_size = (size_t)-1;
 
-			munmap(addr, mehcached_shm_page_size);
-			unlink(mehcached_shm_pages[page_id].path);
-			memset(&mehcached_shm_pages[page_id], 0, sizeof(mehcached_shm_pages[page_id]));
+			size_t region_start = (size_t)-1;
+			size_t region_size = (size_t)-1;
+			void *last_page_paddr = NULL;
 
-			num_freed_pages[numa_node]++;
+			for (page_id = 0; page_id < num_allocated_pages; page_id++)
+			{
+				if (used_pages[page_id])
+					continue;
+				if (mehcached_shm_pages[page_id].numa_node != numa_node)
+					continue;
+
+				void *paddr = mehcached_shm_pages[page_id].paddr;
+				if (last_page_paddr + mehcached_shm_page_size != paddr)
+				{
+					if (smallest_region_size > region_size)
+					{
+						smallest_region_start = region_start;
+						smallest_region_size = region_size;
+					}
+					region_start = page_id;
+					region_size = 1;
+				}
+				else
+					region_size++;
+				last_page_paddr = paddr;
+			}
+			if (region_size != (size_t)-1)
+			{
+				if (smallest_region_size > region_size)
+				{
+					smallest_region_start = region_start;
+					smallest_region_size = region_size;
+				}
+			}
+
+			// no more pages left for this numa node
+			if (smallest_region_size == (size_t)-1)
+				break;
+
+			printf("node %zu: found smallest region %zu (%zu pages)\n", numa_node, smallest_region_start, smallest_region_size);
+
+			for (page_id = smallest_region_start; page_id < smallest_region_start + smallest_region_size; page_id++)
+			{
+				used_pages[page_id] = true;
+				size_t numa_node = mehcached_shm_pages[page_id].numa_node;
+				void *addr = mehcached_shm_pages[page_id].addr;
+				if (num_reserved_pages[numa_node] < num_pages_per_numa_node)
+				{
+					//printf("reserving page (addr=%p, paddr=%p, numa_node=%zu)\n", addr, mehcached_shm_pages[page_id].paddr, numa_node);
+					num_reserved_pages[numa_node]++;
+					//memset(addr, 0, mehcached_shm_page_size);
+				}
+				else
+				{
+					//printf("deallocating surplus page %p on numa node %zu\n", addr, numa_node);
+
+					munmap(addr, mehcached_shm_page_size);
+					unlink(mehcached_shm_pages[page_id].path);
+					memset(&mehcached_shm_pages[page_id], 0, sizeof(mehcached_shm_pages[page_id]));
+
+					num_freed_pages[numa_node]++;
+				}
+			}
 		}
 	}
+	free(used_pages);
+	used_pages = NULL;
 
 	for (numa_node = 0; numa_node < num_numa_nodes; numa_node++)
 		printf("freed %zu pages on numa node %zu\n", num_freed_pages[numa_node], numa_node);
@@ -348,6 +402,10 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 			printf("warning: could reserve only %zu pages (< %zu) on numa node %zu\n", num_reserved_pages[numa_node], num_pages_per_numa_node, numa_node);
 		printf("reserved %zu pages on numa node %zu\n", num_pages_per_numa_node, numa_node);
 	}
+
+	printf("syncing and sleeping for 1 second\n");
+	sync();
+	sleep(1);
 
 	//mehcached_shm_dump_page_info();
 }

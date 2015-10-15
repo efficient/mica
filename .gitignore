@@ -8,6 +8,7 @@ test
 load
 microbench
 microbench_store
+membench
 netbench_client
 netbench_server
 netbench_server_store
@@ -15,6 +16,9 @@ netbench_client_latency
 netbench_server_latency
 netbench_client_soft_fdir
 netbench_server_soft_fdir
+netbench_client_ib
+netbench_server_ib
+netbench_server_ib_store
 netbench_analysis
 
 perf.data

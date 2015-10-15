@@ -26,11 +26,13 @@ MEHCACHED_BEGIN
 
 
 #ifndef MEHCACHED_NO_EVICTION
-// #define MEHCACHED_ITEMS_PER_BUCKET (7)
+// for less memory access
+//#define MEHCACHED_ITEMS_PER_BUCKET (7)
+// for less cache miss (due to index eviction)
 #define MEHCACHED_ITEMS_PER_BUCKET (15)
 #else
-#define MEHCACHED_ITEMS_PER_BUCKET (7)
-// #define MEHCACHED_ITEMS_PER_BUCKET (15)
+//#define MEHCACHED_ITEMS_PER_BUCKET (7)
+#define MEHCACHED_ITEMS_PER_BUCKET (15)
 #endif
 
 // do move-to-head if when (item's distance from tail) >= (pool size) * mth_threshold
@@ -114,7 +116,7 @@ struct mehcached_item
     uint8_t data[0];
 };
 
-#define MEHCACHED_MAX_POOLS (16)
+#define MEHCACHED_MAX_POOLS (24)
 
 struct mehcached_table
 {

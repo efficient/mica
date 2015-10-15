@@ -18,10 +18,14 @@
 #include <pthread.h>
 #include <assert.h>
 #include <signal.h>
+#ifdef MEHCACHED_USE_IB
+#include <netinet/ip.h>
+#endif
 
 #include "mehcached.h"
 #include "hash.h"
 #include "zipf.h"
+#include "trace.h"
 #include "stopwatch.h"
 #include "netbench_config.h"
 #include "net_common.h"
@@ -36,11 +40,45 @@
 #include <rte_malloc.h>
 #include <rte_debug.h>
 
+// enable only one of the cluster settings
+//#define MEHCACHED_CMU_XIA_ROUTERS
+//#define MEHCACHED_EMULAB_C6220
+//#define MEHCACHED_INTEL_ONE_DOMAIN
+//#define MEHCACHED_INTEL_TWO_DOMAINS
+#define MEHCACHED_INTEL_UNIFIED
+//#define MEHCACHED_INTEL_IB_ONE_DOMAIN
+//#define MEHCACHED_INTEL_IB_TWO_DOMAINS
+
+#ifdef MEHCACHED_USE_IB
+#include "../ib-dpdk/hrd.h"
+#endif
+
+#ifndef MEHCACHED_USE_IB
+#if defined(MEHCACHED_CMU_XIA_ROUTERS)
+// xia-router0/1's RX is slow
 #define RX_SAMPLE_RATE (64)		// must be a power of 2
+#else
+//#define RX_SAMPLE_RATE (1)		// must be a power of 2
+#define RX_SAMPLE_RATE (64)		// must be a power of 2
+#endif
+#else
+// IB receives every response for flow control
+#define RX_SAMPLE_RATE (1)
+#endif
+
+#ifdef MEHCACHED_USE_IB
+#define TX_MAX_OUTSTANDING (16 + HRD_SS_WINDOW)
+#define MAX_OUTSTANDING_REQUESTS (16)		// client may have multiple in-flight packets without responses
+#endif
 
 struct packet_construction_state
 {
+#ifndef MEHCACHED_USE_IB
 	struct rte_mbuf *mbuf;
+#else
+	struct hrd_mbuf *mbuf;
+#endif
+
 	uint8_t next_index;
 	uint8_t *next_key;
 };
@@ -62,6 +100,13 @@ struct client_state
 	struct packet_construction_state constr_state_c[MEHCACHED_MAX_PARTITIONS];
 
 	struct packet_construction_state constr_state_h[MEHCACHED_MAX_HOT_ITEMS];
+
+#ifdef MEHCACHED_USE_IB
+	struct hrd_ctrl_blk *cb[MEHCACHED_MAX_PORTS];
+	struct hrd_mbuf *tx_pkts[TX_MAX_OUTSTANDING];
+	uint8_t next_tx_pkt;
+	uint16_t outstanding_requests;
+#endif
 
 	uint8_t next_port_index_tx;	// need modulo to get actual port index
 	uint8_t next_port_index_rx;	// need modulo to get actual port index
@@ -193,6 +238,9 @@ mehcached_remote_check_response(struct client_state *state)
 {
 	uint8_t thread_id = (uint8_t)rte_lcore_id();
 	struct mehcached_workload_thread_conf *thread_conf = &state->workload_conf->threads[thread_id];
+
+	assert(thread_conf->num_ports != 0);
+
 	uint8_t port_id = thread_conf->port_ids[state->next_port_index_rx % thread_conf->num_ports];
 
 #ifdef MEHCACHED_MEASURE_LATENCY
@@ -201,16 +249,33 @@ mehcached_remote_check_response(struct client_state *state)
 	// state->next_port_index_rx++;
 #endif
 
+#ifdef MEHCACHED_USE_IB
+	// printf("outstanding_requests %hu\n", state->outstanding_requests);
+#endif
+
     int i;
     for (i = 0; i < 256; i++)
     {
+#ifndef MEHCACHED_USE_IB
 	    struct rte_mbuf *mbuf = mehcached_receive_packet(port_id);
+#else
+		struct hrd_mbuf *mbuf = NULL;
+		hrd_rx_burst(state->cb[port_id], &mbuf, 1);
+#endif
 	    if (mbuf == NULL)
 	    	break;
 
-	    state->bytes_rx += (uint64_t)(mbuf->pkt.data_len + 24);	// 24 for PHY overheads
+#ifdef MEHCACHED_USE_IB
+		assert(state->outstanding_requests > 0);
+		state->outstanding_requests = (uint16_t)(state->outstanding_requests - 1);
+#endif
+	    state->bytes_rx += (uint64_t)(mbuf->data_len + 24);	// 24 for PHY overheads
 
+#ifndef MEHCACHED_USE_IB
 		struct mehcached_batch_packet *packet = rte_pktmbuf_mtod(mbuf, struct mehcached_batch_packet *);
+#else
+		struct mehcached_batch_packet *packet = (struct mehcached_batch_packet *)hrd_pktmbuf_mtod(mbuf);
+#endif
 	    const uint8_t *next_key = packet->data + sizeof(struct mehcached_request) * (size_t)packet->num_requests;
 		uint8_t request_index;
 		for (request_index = 0; request_index < packet->num_requests; request_index++)
@@ -264,7 +329,9 @@ mehcached_remote_check_response(struct client_state *state)
 		state->target_request_rate_at_server = packet->opaque;
 #endif
 
+#ifndef MEHCACHED_USE_IB
 		mehcached_packet_free(mbuf);
+#endif
 	}
 }
 
@@ -281,10 +348,20 @@ mehcached_init_packet(struct client_state *state, struct packet_construction_sta
 {
 	uint8_t thread_id = (uint8_t)rte_lcore_id();
 
+#ifndef MEHCACHED_USE_IB
 	struct rte_mbuf *mbuf = mehcached_packet_alloc();
+#else
+	struct hrd_mbuf *mbuf = state->tx_pkts[state->next_tx_pkt];
+	if (++state->next_tx_pkt == TX_MAX_OUTSTANDING)
+		state->next_tx_pkt = 0;
+#endif
 	assert(mbuf != NULL);
 
+#ifndef MEHCACHED_USE_IB
 	struct ether_hdr *eth = rte_pktmbuf_mtod(mbuf, struct ether_hdr *);
+#else
+	struct ether_hdr *eth = (struct ether_hdr *)hrd_pktmbuf_mtod(mbuf);
+#endif
 	struct ipv4_hdr *ip = (struct ipv4_hdr *)((unsigned char *)eth + sizeof(struct ether_hdr));
 	struct udp_hdr *udp = (struct udp_hdr *)((unsigned char *)ip + sizeof(struct ipv4_hdr));
 
@@ -299,9 +376,11 @@ mehcached_init_packet(struct client_state *state, struct packet_construction_sta
 	packet->reserved0 = 0;
 	packet->opaque = 0;
 
-	mbuf->pkt.next = NULL;
-	mbuf->pkt.nb_segs = 1;
+#ifndef MEHCACHED_USE_IB
+	mbuf->next = NULL;
+	mbuf->nb_segs = 1;
 	mbuf->ol_flags = 0;
+#endif
 
 	assert(constr_state->mbuf == NULL);
 	constr_state->mbuf = mbuf;
@@ -315,7 +394,11 @@ static
 void
 mehcached_append_request(struct client_state *state MEHCACHED_UNUSED, struct packet_construction_state *constr_state, uint8_t operation, uint64_t key_hash, const uint8_t *key, size_t key_length, const uint8_t *value, size_t value_length, uint32_t expire_time)
 {
+#ifndef MEHCACHED_USE_IB
 	struct mehcached_batch_packet *packet = rte_pktmbuf_mtod(constr_state->mbuf, struct mehcached_batch_packet *);
+#else
+	struct mehcached_batch_packet *packet = (struct mehcached_batch_packet *)hrd_pktmbuf_mtod(constr_state->mbuf);
+#endif
 
 	assert(constr_state->next_index < packet->num_requests);
 
@@ -346,7 +429,11 @@ bool
 mehcached_need_to_send_packet(struct client_state *state MEHCACHED_UNUSED, struct packet_construction_state *constr_state)
 {
 	assert(constr_state->mbuf != NULL);
+#ifndef MEHCACHED_USE_IB
 	struct mehcached_batch_packet *packet = rte_pktmbuf_mtod(constr_state->mbuf, struct mehcached_batch_packet *);
+#else
+	struct mehcached_batch_packet *packet = (struct mehcached_batch_packet *)hrd_pktmbuf_mtod(constr_state->mbuf);
+#endif
 
 	return constr_state->next_index == packet->num_requests;
 }
@@ -358,7 +445,11 @@ mehcached_client_send_packet(struct client_state *state, struct packet_construct
 	assert(constr_state->mbuf != NULL);
 	assert(mehcached_need_to_send_packet(state, constr_state));
 
+#ifndef MEHCACHED_USE_IB
 	struct ether_hdr *eth = rte_pktmbuf_mtod(constr_state->mbuf, struct ether_hdr *);
+#else
+	struct ether_hdr *eth = (struct ether_hdr *)hrd_pktmbuf_mtod(constr_state->mbuf);
+#endif
 	struct ipv4_hdr *ip = (struct ipv4_hdr *)((unsigned char *)eth + sizeof(struct ether_hdr));
 	struct udp_hdr *udp = (struct udp_hdr *)((unsigned char *)ip + sizeof(struct ipv4_hdr));
 
@@ -373,14 +464,17 @@ mehcached_client_send_packet(struct client_state *state, struct packet_construct
 
 		state->num_operations_done++;
 
-		if (*(const uint64_t *)next_key == 0)
+		if (*(const uint64_t *)next_key == 1 && MEHCACHED_KEY_LENGTH(req->kv_length_vec) <= 8)	// for little-endian
 			state->num_key0_operations_done++;
 
         next_key += MEHCACHED_ROUNDUP8(MEHCACHED_KEY_LENGTH(req->kv_length_vec)) + MEHCACHED_ROUNDUP8(MEHCACHED_VALUE_LENGTH(req->kv_length_vec));
 	}
 
-	// XXX: hardcode to detect the destination server port
+	// discover which server port will receive this packet to set the destination MAC correctly
+	// this matters only when no switch is used
 	uint8_t server_port_id;
+#ifdef MEHCACHED_CMU_XIA_ROUTERS
+	// XXX: CMU testbed - hardcode to detect the destination server port
 	if (state->client_conf->ports[0].ip_addr[3] < 12)	// client0?
 	{
 		const uint8_t sp[] = {0, 1, 4, 5};
@@ -391,6 +485,45 @@ mehcached_client_send_packet(struct client_state *state, struct packet_construct
 		const uint8_t sp[] = {2, 3, 6, 7};
 		server_port_id = sp[port_id];
 	}
+#endif
+#ifdef MEHCACHED_EMULAB_C6220
+	// XXX: Emulab Apt c6220 - single-port machines
+	server_port_id = 0;
+#endif
+#if defined(MEHCACHED_INTEL_ONE_DOMAIN) || defined(MEHCACHED_INTEL_TWO_DOMAINS) || defined(MEHCACHED_INTEL_UNIFIED)
+	// XXX: Intel testbed - one client machine, the same port count
+	// server port i <-> client port i
+	server_port_id = port_id;
+#endif
+#if defined(MEHCACHED_INTEL_IB_ONE_DOMAIN) || defined(MEHCACHED_INTEL_IB_TWO_DOMAINS)
+	// non -ib is not implemented
+	server_port_id = 0;
+#endif
+
+#ifdef MEHCACHED_USE_IB
+	int sn = 0;
+	{
+		uint16_t mapping_id = rte_be_to_cpu_16(udp->dst_port);
+
+		// we support EREW only right now
+		assert(mapping_id < 1024);
+		uint16_t partition_id = mapping_id;
+
+		uint8_t server_owner_thread_id = state->server_conf->partitions[partition_id].thread_id;
+
+		uint8_t server_thread_id;
+		for (server_thread_id = 0; server_thread_id < server_owner_thread_id; server_thread_id++)
+			sn += (int)state->server_conf->threads[server_thread_id].num_ports;
+
+		// multiple across server ports
+		int server_port_index = (int)state->num_packets_initialized % state->server_conf->threads[server_owner_thread_id].num_ports;
+		sn += server_port_index;
+		assert(sn < state->cb[port_id]->num_remote_qps);
+
+		// just for MAC/IP address setting (not really important in IB)
+		server_port_id = state->server_conf->threads[server_owner_thread_id].port_ids[server_port_index];
+	}
+#endif
 
 	rte_memcpy(&eth->s_addr, state->client_conf->ports[port_id].mac_addr, 6);
 	rte_memcpy(&eth->d_addr, state->server_conf->ports[server_port_id].mac_addr, 6);
@@ -413,7 +546,14 @@ mehcached_client_send_packet(struct client_state *state, struct packet_construct
 	}
 	if ((state->num_packets_initialized & (RX_SAMPLE_RATE - 1)) == state->rx_sample_v)
 	{
-		mehcached_remote_check_response(state);
+#ifndef MEHCACHED_USE_IB
+		uint8_t thread_id = (uint8_t)rte_lcore_id();
+		struct mehcached_workload_thread_conf *thread_conf = &state->workload_conf->threads[thread_id];
+		if (thread_conf->num_ports != 0)
+			mehcached_remote_check_response(state);
+#else
+		// mehcached_remote_check_response() will be called in the main loop
+#endif
 	}
 	else
 	{
@@ -427,6 +567,11 @@ mehcached_client_send_packet(struct client_state *state, struct packet_construct
 	rte_memcpy(&ip->src_addr, state->client_conf->ports[port_id].ip_addr, 4);
 	rte_memcpy(&ip->dst_addr, state->server_conf->ports[server_port_id].ip_addr, 4);
 
+#ifdef MEHCACHED_USE_IB
+	constr_state->mbuf->d_lid = state->cb[port_id]->remote_qp_attrs[sn].lid;
+	constr_state->mbuf->d_qpn = state->cb[port_id]->remote_qp_attrs[sn].qpn;
+#endif
+
 	uint16_t packet_length = (uint16_t)(constr_state->next_key - (uint8_t *)packet);
 	ip->total_length = rte_cpu_to_be_16((uint16_t)(packet_length - sizeof(struct ether_hdr)));
 
@@ -439,15 +584,27 @@ mehcached_client_send_packet(struct client_state *state, struct packet_construct
 
 	udp->dgram_len = rte_cpu_to_be_16((uint16_t)(packet_length - sizeof(struct ether_hdr) - sizeof(struct ipv4_hdr)));
 
-	constr_state->mbuf->pkt.data_len = packet_length;
-	constr_state->mbuf->pkt.pkt_len = (uint32_t)packet_length;
-
-#ifndef NDEBUG
-    rte_mbuf_sanity_check(constr_state->mbuf, RTE_MBUF_PKT, 1);
-    assert(rte_pktmbuf_headroom(constr_state->mbuf) + constr_state->mbuf->pkt.data_len <= constr_state->mbuf->buf_len);
+	constr_state->mbuf->data_len = (uint16_t)packet_length;
+#ifndef MEHCACHED_USE_IB
+	constr_state->mbuf->pkt_len = (uint32_t)packet_length;
 #endif
 
+#ifndef NDEBUG
+#ifndef MEHCACHED_USE_IB
+    rte_mbuf_sanity_check(constr_state->mbuf, 1);
+    assert(rte_pktmbuf_headroom(constr_state->mbuf) + constr_state->mbuf->data_len <= constr_state->mbuf->buf_len);
+#else
+	assert(constr_state->mbuf->data_len <= HRD_MAX_DATA);
+#endif
+#endif
+
+#ifndef MEHCACHED_USE_IB
 	mehcached_send_packet(port_id, constr_state->mbuf);
+#else
+	//printf("tx sn %d lid %d sqn %d len %hu\n", sn, constr_state->mbuf->d_lid, constr_state->mbuf->d_qpn, packet_length);
+
+	hrd_tx_burst(state->cb[port_id], &constr_state->mbuf, 1);
+#endif
 	constr_state->mbuf = NULL;
 
     state->bytes_tx += (uint64_t)(packet_length + 24);	// 24 for PHY overheads
@@ -460,9 +617,13 @@ mehcached_remote_schedule_request(struct client_state *state, uint8_t operation,
 	uint8_t thread_id = (uint8_t)rte_lcore_id();
 	struct mehcached_workload_thread_conf *thread_conf = &state->workload_conf->threads[thread_id];
 
-	// uint32_t opaque = (uint32_t)state->num_operations_done;
+	assert(thread_conf->num_ports != 0);
 
-    uint16_t partition_id = (uint16_t)(key_hash >> 48) & (uint16_t)(state->server_conf->num_partitions - 1);
+	// uint32_t opeque = (uint32_t)state->num_operations_done;
+
+    //uint16_t partition_id = (uint16_t)(key_hash >> 48) & (uint16_t)(state->server_conf->num_partitions - 1);
+	// for non power-of-two num_partitions
+    uint16_t partition_id = (uint16_t)(key_hash >> 48) % (uint16_t)state->server_conf->num_partitions;
 
 	uint16_t mapping_id = (uint16_t)-1;
 	bool spread_requests = false;
@@ -501,13 +662,19 @@ mehcached_remote_schedule_request(struct client_state *state, uint8_t operation,
 		if (state->partition_id_to_thread_id[partition_id] == (uint8_t)-1)
 		{
 			assert(mapping_id == (uint16_t)-1);
-			if (thread_conf->partition_mode >= 0)
-				// XXX: this supports only two partition_mode values
-				mapping_id = (uint16_t)(1024 + ((state->next_thread_id_for_spread_requests % ((uint64_t)state->server_conf->num_threads >> 1)) << 1) + (uint64_t)(partition_id & 1));
-			else
-				mapping_id = (uint16_t)(1024 + state->next_thread_id_for_spread_requests % state->server_conf->num_threads);
+			while (true)
+			{
+				if (thread_conf->partition_mode >= 0)
+					// XXX: this supports only two partition_mode values
+					mapping_id = (uint16_t)(1024 + ((state->next_thread_id_for_spread_requests % ((uint64_t)state->server_conf->num_threads >> 1)) << 1) + (uint64_t)(partition_id & 1));
+				else
+					mapping_id = (uint16_t)(1024 + state->next_thread_id_for_spread_requests % state->server_conf->num_threads);
+				state->next_thread_id_for_spread_requests++;
+				// we choose this mapping id only when the corresponding thread is active (i.e., uses any port)
+				if (state->server_conf->threads[mapping_id - 1024].num_ports > 0)
+					break;
+			}
 			state->partition_id_to_thread_id[partition_id] = (uint8_t)(mapping_id - 1024);
-			state->next_thread_id_for_spread_requests++;
 		}
 		else
 			// reuse the previous mapping
@@ -530,7 +697,10 @@ mehcached_remote_schedule_request(struct client_state *state, uint8_t operation,
 
 	if (mehcached_need_to_send_packet(state, constr_state))
 	{
+		// choose which client port to use to send a request for a particular server partition
 		uint8_t port_id;
+
+#ifdef MEHCACHED_CMU_XIA_ROUTERS
 		// XXX: assume that the top half is for (mapping_id & 1) == 0 and the bottom half is for (mapping_id & 1) == 1
 		if (spread_requests)
 			port_id = thread_conf->port_ids[(thread_conf->num_ports >> 1) * (mapping_id & 1) + state->next_port_index_tx % (thread_conf->num_ports >> (1 + state->port_mode))];
@@ -540,6 +710,62 @@ mehcached_remote_schedule_request(struct client_state *state, uint8_t operation,
 			// this following allows putting all partitions to one thread (MEMCACHED) rather than sending requests to both NUMA domains
 			port_id = thread_conf->port_ids[(thread_conf->num_ports >> 1) * (state->server_conf->partitions[partition_id].thread_id & 1) + state->next_port_index_tx % (thread_conf->num_ports >> (1 + state->port_mode))];
 		}
+#endif
+#ifdef MEHCACHED_EMULAB_C6220
+		// XXX: for a single-port machine (Emulab Apt)
+		port_id = thread_conf->port_ids[0];
+#endif
+#ifdef MEHCACHED_INTEL_ONE_DOMAIN
+        // XXX: this block can be combined with MEHCACHED_INTEL_UNIFIED, but kept to avoid any regression
+		// XXX: the server has one domain - sending a packet to any server will arrive at any server core
+		port_id = thread_conf->port_ids[state->next_port_index_tx % (thread_conf->num_ports >> (0 + state->port_mode))];
+#endif
+#ifdef MEHCACHED_INTEL_TWO_DOMAINS
+        // XXX: this block can be combined with MEHCACHED_INTEL_UNIFIED, but kept to avoid any regression
+		if (spread_requests)
+		{
+			assert(mapping_id >= 1024);
+			uint8_t server_thread_id = (uint8_t)(mapping_id - 1024);
+			uint8_t server_port_idx = state->next_port_index_tx % state->server_conf->threads[server_thread_id].num_ports;
+			uint8_t server_port_id = state->server_conf->threads[server_thread_id].port_ids[server_port_idx];
+			// server port i <-> client port i
+			// XXX: this may use a client port that is not registered in the client machine configuration
+			port_id = server_port_id;
+		}
+		else
+		{
+			assert(mapping_id < 1024);
+			// for partition_id < num_partitions / 2 (server node 0), use the first half client ports
+			// for partition_id >= num_partitions / 2 (server node 1), use the second half client ports
+			if (mapping_id < (state->server_conf->num_partitions >> 1))
+				port_id = thread_conf->port_ids[(thread_conf->num_ports >> 1) * 0 + state->next_port_index_tx % (thread_conf->num_ports >> (1 + state->port_mode))];
+			else
+				port_id = thread_conf->port_ids[(thread_conf->num_ports >> 1) * 1 + state->next_port_index_tx % (thread_conf->num_ports >> (1 + state->port_mode))];
+		}
+#endif
+#ifdef MEHCACHED_INTEL_UNIFIED
+		uint8_t server_thread_id;
+		if (spread_requests)
+		{
+			assert(mapping_id >= 1024);
+			server_thread_id = (uint8_t)(mapping_id - 1024);
+		}
+		else
+		{
+			assert(mapping_id < 1024);
+			server_thread_id = state->server_conf->partitions[partition_id].thread_id;
+		}
+
+		uint8_t server_port_idx = state->next_port_index_tx % state->server_conf->threads[server_thread_id].num_ports;
+		uint8_t server_port_id = state->server_conf->threads[server_thread_id].port_ids[server_port_idx];
+		// server port i <-> client port i
+		// XXX: this may use a client port that is not registered in the client machine configuration
+		port_id = server_port_id;
+#endif
+#if defined(MEHCACHED_INTEL_IB_ONE_DOMAIN) || defined(MEHCACHED_INTEL_IB_TWO_DOMAINS)
+		// XXX: Intel clients are single-port machines
+		port_id = thread_conf->port_ids[0];
+#endif
 
 		mehcached_client_send_packet(state, constr_state, port_id);
 
@@ -609,9 +835,43 @@ mehcached_benchmark_client_proc(void *arg)
 	struct mehcached_client_conf *client_conf = state->client_conf;
 	struct mehcached_workload_thread_conf *thread_conf = &state->workload_conf->threads[thread_id];
 
-	printf("benchmark client running on core %hhu\n", thread_id);
 
 	mehcached_calc_hot_item_hash(state->server_conf, &state->hot_item_hash);
+
+#ifdef MEHCACHED_USE_IB
+	// XXX: this may prevent using multiple workloads by reinitializing ctrl_blk
+	// this must be initialized here because of its protection domain;
+	// if this is done too early, some place in hrd_tx_burst() will cause a segfault
+	static volatile uint8_t ib_init_thread_id = 0;
+	while (ib_init_thread_id != thread_id)
+		;
+
+	char addr[1024];
+	FILE *fp = fopen("conf_ib_memcached_address", "r");
+	if (fp == NULL) {
+		printf("cannot open file: conf_ib_memcached_address\n");
+		return 0;
+	}
+	if (fgets(addr, sizeof(addr), fp) == NULL) {
+		printf("cannot read file: conf_ib_memcached_address\n");
+		return 0;
+	}
+	while (addr[strlen(addr)] == '\n')
+		addr[strlen(addr)] = '\0';
+	fclose(fp);
+	
+	{
+        uint8_t port_index;
+        for (port_index = 0; port_index < thread_conf->num_ports; port_index++) {
+			uint8_t port_id = thread_conf->port_ids[port_index];
+			state->cb[port_id] = hrd_init_ctrl_blk(thread_id * MEHCACHED_MAX_PORTS + port_id, port_id, (int)rte_lcore_to_socket_id((unsigned int)thread_id));
+			state->cb[port_id]->num_remote_qps = hrd_get_registered_qps(state->cb[port_id], addr);
+		}
+	}
+
+	ib_init_thread_id++;
+#endif
+
 
 	uint64_t key[MEHCACHED_ROUNDUP8(thread_conf->key_length) / 8 + 1];
 	uint64_t value[MEHCACHED_ROUNDUP8(thread_conf->value_length) / 8 + 1];
@@ -655,7 +915,10 @@ mehcached_benchmark_client_proc(void *arg)
     const uint32_t put_threshold = (uint32_t)((abs_get_ratio + abs_put_ratio) * (double)((uint32_t)-1));
 
     int packet_index;
-    const int num_batch_proc_packets = 32;
+    int num_batch_proc_packets = 32;
+
+	if (thread_conf->num_ports == 0)
+		num_batch_proc_packets = 0;
 
     state->rx_sample_rand_state = (uint64_t)thread_id ^ mehcached_stopwatch_now();
     state->rx_sample_v = 0;	// will be set later
@@ -690,7 +953,12 @@ mehcached_benchmark_client_proc(void *arg)
             {
                 uint64_t num_tx_sent;
                 uint64_t num_tx_dropped;
+#ifndef MEHCACHED_USE_IB
                 mehcached_get_stats_lcore(port_id, thread_id, NULL, NULL, NULL, &num_tx_sent, &num_tx_dropped);
+#else
+				num_tx_sent = 0;
+				num_tx_dropped = 0;
+#endif
                 opackets += num_tx_sent;
                 oerrors += num_tx_dropped;
                 // XXX: how to handle integer wraps after a very long run?
@@ -704,12 +972,17 @@ mehcached_benchmark_client_proc(void *arg)
 	{
 		if (thread_conf->num_operations != 0 && state->num_operations_done >= thread_conf->num_operations)
 			break;
- #ifdef MEHCACHED_ENABLE_THROTTLING
+#ifdef MEHCACHED_ENABLE_THROTTLING
 	    uint64_t num_new_requests = 0;
 #endif
 
 		for (packet_index = 0; packet_index < num_batch_proc_packets; packet_index++)
 		{
+#ifdef MEHCACHED_USE_IB
+			if (state->outstanding_requests < MAX_OUTSTANDING_REQUESTS)
+			{
+#endif
+
 			uint32_t op_r = mehcached_rand(&op_type_rand_state);
 			bool is_get = op_r <= get_threshold;
 			bool is_put = op_r > get_threshold && op_r <= put_threshold;
@@ -775,8 +1048,22 @@ mehcached_benchmark_client_proc(void *arg)
 #ifdef MEHCACHED_ENABLE_THROTTLING
 				num_new_requests++;
 #endif
+#ifdef MEHCACHED_USE_IB
+				state->outstanding_requests++;
+#endif
 			}
+
+#ifdef MEHCACHED_USE_IB
+			}
+#endif
+
 		}
+
+#ifdef MEHCACHED_USE_IB
+		// we need to call this always because the IB version does not send out any packet when there are too many outstanding requests while we need to receive packets to update the number of outstanding requests
+		if (thread_conf->num_ports != 0)
+			mehcached_remote_check_response(state);
+#endif
 
 		// we do this once per batch so that multiple mapping values can be used for each port
 		state->next_port_index_rx++;
@@ -794,7 +1081,8 @@ mehcached_benchmark_client_proc(void *arg)
 				if (thread_id == 0)
 				{
 					// check response on core 0
-					mehcached_remote_check_response(state);
+					if (thread_conf->num_ports != 0)
+						mehcached_remote_check_response(state);
 					// increment next_port_index_rx so that a tight loop calling mehcached_remote_check_response() can check all ports
 					state->next_port_index_rx++;
 				}
@@ -812,12 +1100,14 @@ mehcached_benchmark_client_proc(void *arg)
 				}
 
 				// send out all buffered packets while waiting
+#ifndef MEHCACHED_USE_IB
 				size_t port_index;
 	            for (port_index = 0; port_index < thread_conf->num_ports; port_index++)
 	            {
 	                uint8_t port_id = thread_conf->port_ids[port_index];
 					mehcached_send_packet_flush(port_id);
 				}
+#endif
 			}
 			batch_t_start = batch_t_end;
 		}
@@ -835,7 +1125,13 @@ mehcached_benchmark_client_proc(void *arg)
                 uint8_t port_id = thread_conf->port_ids[port_index];
                 uint64_t num_tx_sent;
                 uint64_t num_tx_dropped;
+#ifndef MEHCACHED_USE_IB
                 mehcached_get_stats(port_id, NULL, NULL, NULL, &num_tx_sent, &num_tx_dropped);
+#else
+				(void)port_id;
+				num_tx_sent = 0;
+				num_tx_dropped = 0;
+#endif
                 total_num_tx_sent += num_tx_sent;
                 total_num_tx_dropped += num_tx_dropped;
             }
@@ -901,9 +1197,13 @@ mehcached_benchmark_client_proc(void *arg)
                         	num_active_threads++;
                     }
 
+#ifndef MEHCACHED_USE_IB
                     double effective_tx_ratio = 0.;
                     if (total_new_num_tx_sent + total_new_num_tx_dropped != 0)
 	                    effective_tx_ratio = (double)total_new_num_tx_sent / (double)(total_new_num_tx_sent + total_new_num_tx_dropped);
+#else
+                    double effective_tx_ratio = 1.;
+#endif
 
                     double success_rate = 0.;
                     if (total_new_num_operations_done != 0 && effective_tx_ratio > 0.)
@@ -976,7 +1276,7 @@ mehcached_benchmark_client_proc(void *arg)
 	        }
 #endif
 
-            if (diff - prev_rate_update >= 0.1)
+            if (diff - prev_rate_update >= 1.0)
             {
                 if (thread_id == 0)
                 {
@@ -992,11 +1292,17 @@ mehcached_benchmark_client_proc(void *arg)
                         {
                             uint64_t num_tx_sent;
                             uint64_t num_tx_dropped;
+#ifndef MEHCACHED_USE_IB
                             mehcached_get_stats_lcore(port_id, thread_id, NULL, NULL, NULL, &num_tx_sent, &num_tx_dropped);
+#else
+							num_tx_sent = 0;
+							num_tx_dropped = 0;
+#endif
 			                opackets += num_tx_sent;
 			                oerrors += num_tx_dropped;
 			                // XXX: how to handle integer wraps after a very long run?
 			            }
+						//printf("port %hu %lu %lu\n", port_id, opackets, oerrors);
 			            uint64_t new_opackets = opackets - last_opackets[port_id];
 			            last_opackets[port_id] = opackets;
 			            uint64_t new_oerrors = oerrors - last_oerrors[port_id];
@@ -1057,15 +1363,34 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
 
 	mehcached_stopwatch_init_start();
 
+    printf("initializing shm\n");
+
+    const size_t page_size = 1048576 * 2;
+    const size_t num_numa_nodes = 2;
+#ifdef MEHCACHED_CMU_XIA_ROUTERS
+    const size_t num_pages_to_try = 4096;
+    const size_t num_pages_to_reserve = 4096 - 2048;	// give 2048 pages to dpdk
+#endif
+#if defined(MEHCACHED_EMULAB_C6220) || defined(MEHCACHED_INTEL_ONE_DOMAIN) || defined(MEHCACHED_INTEL_TWO_DOMAINS) || defined(MEHCACHED_INTEL_UNIFIED) || defined(MEHCACHED_INTEL_IB_ONE_DOMAIN) || defined(MEHCACHED_INTEL_IB_TWO_DOMAINS)
+    const size_t num_pages_to_try = 16384;
+    const size_t num_pages_to_reserve = 16384 - 2048;	// give 2048 pages to dpdk
+#endif
+
+    mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try, num_pages_to_reserve);
+
     printf("initializing DPDK\n");
 
-    uint64_t cpu_mask = ((uint64_t)1 << client_conf->num_threads) - 1;
-	char cpu_mask_str[10];
+    uint64_t cpu_mask = 0;
+    uint8_t thread_id;
+	for (thread_id = 0; thread_id < client_conf->num_threads; thread_id++)
+		cpu_mask |= (uint64_t)1 << thread_id;
+	char cpu_mask_str[100];
 	snprintf(cpu_mask_str, sizeof(cpu_mask_str), "%lx", cpu_mask);
 
 	char *rte_argv[] = {"",
 		"-c", cpu_mask_str,
-		"-n", "3",	// 3 for client0/1
+		//"-n", "3",	// 3 for client0/1
+		"-n", "4",
 	};
 	int rte_argc = sizeof(rte_argv) / sizeof(rte_argv[0]);
 
@@ -1079,10 +1404,12 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
 		return;
 	}
 
-    uint8_t thread_id;
-
+#ifndef MEHCACHED_USE_IB
 	uint8_t num_ports_max;
-	uint64_t port_mask = ((size_t)1 << client_conf->num_ports) - 1;
+	uint64_t port_mask = 0;
+    uint8_t port_id;
+	for (port_id = 0; port_id < client_conf->num_ports; port_id++)
+		port_mask |= (uint64_t)1 << port_id;
 	if (!mehcached_init_network(cpu_mask, port_mask, &num_ports_max))
 	{
 		fprintf(stderr, "failed to initialize network\n");
@@ -1092,7 +1419,6 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
 
 
 	printf("setting MAC address\n");
-    uint8_t port_id;
     for (port_id = 0; port_id < client_conf->num_ports; port_id++)
     {
     	struct ether_addr mac_addr;
@@ -1119,6 +1445,7 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
             if (!mehcached_set_dst_port_mapping(port_id, (uint16_t)thread_id, thread_id))
                 return;
     }
+#endif
 
 
     printf("initializing client states\n");
@@ -1140,6 +1467,10 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
     sigaction(SIGINT, &new_action, NULL);
     sigaction(SIGTERM, &new_action, NULL);
 
+#ifdef MEHCACHED_USE_IB
+	assert(num_workloads == 1);
+#endif
+
     int workload_index;
     for (workload_index = 0; workload_index < num_workloads; workload_index++)
     {
@@ -1157,6 +1488,18 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
 			state->workload_conf = workload_conf;
 			state->server_conf = mehcached_get_server_conf(machine_filename, workload_conf->threads[thread_id].server_name);
 
+#ifdef MEHCACHED_USE_IB
+			int j;
+			for (j = 0; j < TX_MAX_OUTSTANDING; j++)
+			{
+				state->tx_pkts[j] = mehcached_eal_malloc_lcore(sizeof(struct hrd_mbuf), thread_id);
+				assert(state->tx_pkts[j]);
+			}
+			state->next_tx_pkt = 0;
+
+			state->outstanding_requests = 0;
+#endif
+
 			mehcached_init_header_template(state);
 
 			uint16_t partition_id;
@@ -1167,11 +1510,11 @@ mehcached_benchmark_client(const char *machine_filename, const char *client_name
 				workload_conf->threads[thread_id - 1].num_items != workload_conf->threads[thread_id].num_items ||
 				workload_conf->threads[thread_id - 1].zipf_theta != workload_conf->threads[thread_id].zipf_theta)
 			{
-				mehcached_zipf_init(&state->gen_state, workload_conf->threads[thread_id].num_items, workload_conf->threads[thread_id].zipf_theta, thread_id ^ mehcached_stopwatch_now());
+				mehcached_zipf_init(&state->gen_state, workload_conf->threads[thread_id].num_items, workload_conf->threads[thread_id].zipf_theta, (thread_id ^ mehcached_stopwatch_now()) & 0xffffffffffffu);
 				mehcached_zipf_next(&state->gen_state);
 			}
 			else
-				mehcached_zipf_init_copy(&state->gen_state, &states[thread_id - 1]->gen_state, thread_id ^ mehcached_stopwatch_now());
+				mehcached_zipf_init_copy(&state->gen_state, &states[thread_id - 1]->gen_state, (thread_id ^ mehcached_stopwatch_now()) & 0xffffffffffffu);
 
 	        state->target_request_rate_at_server = 20000000;  // 20 Mops
 	        state->target_request_rate = 20000000;  // 20 Mops

@@ -31,7 +31,11 @@ setup_target()
 {
 	#option=$1
 	#export RTE_TARGET=${TARGETS[option]}
-
+	
+	if [[ $1 =~ intel ]]; then
+		#echo Enabling debug symbols for systemtap
+               	export EXTRA_CFLAGS='-g -gdwarf-2 -fno-omit-frame-pointer'
+        fi
 	compiler=${RTE_TARGET##*-}
 	if [ "$compiler" == "icc" ] ; then
 		platform=${RTE_TARGET%%-*}
@@ -44,10 +48,18 @@ setup_target()
 	#if [ "$QUIT" == "0" ] ; then
 		if [ ! -d $RTE_SDK/$RTE_TARGET ]; then
 			make config T=${RTE_TARGET} O=$RTE_SDK/$RTE_TARGET
-			sed -i 's/CONFIG_RTE_MEMPOOL_CACHE_MAX_SIZE=.*/CONFIG_RTE_MEMPOOL_CACHE_MAX_SIZE=8192/g' $RTE_SDK/$RTE_TARGET/.config
+			# 8192 = 8 port * 1024 mbuf
+			# 16384 = 16 port * 1024 mbuf
+			sed -i 's/CONFIG_RTE_MEMPOOL_CACHE_MAX_SIZE=.*/CONFIG_RTE_MEMPOOL_CACHE_MAX_SIZE=16384/g' $RTE_SDK/$RTE_TARGET/.config
+			#sed -i 's/CONFIG_RTE_IXGBE_INC_VECTOR=.*/CONFIG_RTE_IXGBE_INC_VECTOR=n/g' $RTE_SDK/$RTE_TARGET/.config		# for non AVX machines
 			rm $RTE_SDK/$RTE_TARGET/include/rte_config.h
 		fi
-		make -C $RTE_SDK/$RTE_TARGET
+	if [[ $1 =~ intel ]]; then
+		#export EXTRA_CFLAGS='-g -gdwarf-2 -fno-omit-frame-pointer'
+                make -j8 -C $RTE_SDK/$RTE_TARGET
+	else
+		make -j8 -C $RTE_SDK/$RTE_TARGET
+        fi
 	#fi
 	#echo "------------------------------------------------------------------------------"
 	#echo " RTE_TARGET exported as $RTE_TARGET"
@@ -250,25 +262,74 @@ ls_mnt_huge()
 
 ##### from DPDK/tools/setup.sh
 
+if [[ "$1" == "" ]]; then
+	echo $0 NODE-NAME
+	echo NODE-NAME:
+	echo server
+	echo client0
+	echo client1
+	echo emulab
+	echo intel
+	echo unified
+	echo ...
+	exit 1
+fi
+
+if  [[ $1 =~ unified ]]; then
+        set -- "intel" #rename intel option as unfied option
+fi 
 
 export RTE_SDK=`readlink -f $(dirname ${BASH_SOURCE[0]})/../../DPDK`
-export RTE_TARGET=x86_64-default-linuxapp-gcc
+#export RTE_TARGET=x86_64-default-linuxapp-gcc
+export RTE_TARGET=x86_64-native-linuxapp-gcc
 
-pushd "$RTE_SDK"; setup_target; popd
+# compile DPDK
+pushd "$RTE_SDK"; setup_target $1; popd
 
-#if [ "$HOSTNAME" == "server" ]; then
+# release shm (potentially dangerous if any application depends on persistent shm entries)
+for i in $(ipcs -m | awk '{ print $1; }'); do
+		if [[ $i =~ 0x.* ]]; then
+				sudo ipcrm -M $i 2>/dev/null
+		fi
+done
+
+# drop cache (for more contiguous memory)
+echo "echo 3 > /proc/sys/vm/drop_caches" > .echo_tmp
+sudo sh .echo_tmp
+rm -f .echo_tmp
+
+if [[ $1 =~ server ]]; then
+	echo using 32 GiB
 	set_numa_pages 8192 8192	# 32 GiB
-#else
-#	set_numa_pages 2048 2048	# 8 GiB
-#fi
+elif [[ $1 =~ client[[:digit:]]+ ]]; then
+	echo using 8 GiB
+	set_numa_pages 2048 2048	# 8 GiB
+elif [[ $1 =~ emulab ]]; then
+	echo using 32 GiB
+	set_numa_pages 8192 8192	# 32 GiB
+elif [[ $1 =~ intel ]]; then
+	echo using 32 GiB
+	set_numa_pages 8192 8192	# 32 GiB
+else
+	echo unknown server name: $1
+	echo using 8 GiB
+	set_numa_pages 2048 2048	# 8 GiB
+fi
+
+find /mnt/huge/ -type f | xargs sudo rm -f
+sudo sync
+
 load_igb_uio_module
 
 grep_meminfo
 
-sudo $RTE_SDK/tools/pci_unbind.py --force --bind=igb_uio xge0 xge1 xge2 xge3
-sudo $RTE_SDK/tools/pci_unbind.py --force --bind=igb_uio xge4 xge5 xge6 xge7
+DEVS=`lspci | grep '82599\|X520' | awk '{ print $1 }'`
+#sudo $RTE_SDK/tools/pci_unbind.py --force --bind=igb_uio $DEVS		# 1.5
+#sudo $RTE_SDK/tools/igb_uio_bind.py --force --bind=igb_uio $DEVS	# 1.6
+sudo $RTE_SDK/tools/dpdk_nic_bind.py --force --bind=igb_uio $DEVS	# 1.8
 
 # disable OOM kills
 sudo sysctl -w vm.overcommit_memory=1
 sudo sysctl -w kernel.shmmax=12884901888
 sudo sysctl -w kernel.shmall=12884901888
+

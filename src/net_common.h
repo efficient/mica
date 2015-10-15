@@ -18,11 +18,11 @@
 
 #include <rte_mbuf.h>
 
-#define MEHCACHED_MAX_LCORES (16)
+#define MEHCACHED_MAX_LCORES (24)
 #define MEHCACHED_MAX_NUMA_NODES (2)
 
-#define MEHCACHED_MAX_PORTS (8)
-#define MEHCACHED_MAX_QUEUES (16)
+#define MEHCACHED_MAX_PORTS (16)
+#define MEHCACHED_MAX_QUEUES (24)
 
 struct rte_mbuf *
 mehcached_packet_alloc();

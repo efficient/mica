@@ -21,7 +21,7 @@
 #include <rte_ip.h>
 #include <rte_udp.h>
 
-// override opaque to measure latency
+// override opaque to perform client-side throttling
 #define MEHCACHED_ENABLE_THROTTLING
 
 // override expire time to measure end-to-end latency

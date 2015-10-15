@@ -25,22 +25,24 @@
 #include <rte_byteorder.h>
 #include <rte_ethdev.h>
 #include <rte_log.h>
+#include <rte_errno.h>
 #include <rte_debug.h>
 
+// estimated memory use by mbuf pool (per numa node): MEHCACHED_MBUF_ENTRY_SIZE * MEHCACHED_MBUF_SIZE
 #define MEHCACHED_MBUF_ENTRY_SIZE (2048 + sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM)
-#define MEHCACHED_MBUF_SIZE (MEHCACHED_MAX_PORTS * MEHCACHED_MAX_QUEUES * 4096)     // TODO: need to divide by numa node count
+//#define MEHCACHED_MBUF_SIZE (MEHCACHED_MAX_PORTS * MEHCACHED_MAX_QUEUES * 2048)
 
 #define MEHCACHED_MAX_PKT_BURST (32)
 
 #define MEHCACHED_RX_PTHRESH (8)
 #define MEHCACHED_RX_HTHRESH (8)
-#define MEHCACHED_RX_WTHRESH (4)
+#define MEHCACHED_RX_WTHRESH (0)
 
-#define MEHCACHED_TX_PTHRESH (36)
+#define MEHCACHED_TX_PTHRESH (32)
 #define MEHCACHED_TX_HTHRESH (0)
 #define MEHCACHED_TX_WTHRESH (0)
 
-#define RTE_TEST_RX_DESC_DEFAULT (128)
+#define RTE_TEST_RX_DESC_DEFAULT (128) // larger RX q size can mitigate bursty behavior by client requetts but can also increase pressure on cache etc and lower performance. usually should less than 512 
 #define RTE_TEST_TX_DESC_DEFAULT (512)
 static uint16_t mehcached_num_rx_desc = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t mehcached_num_tx_desc = RTE_TEST_TX_DESC_DEFAULT;
@@ -52,11 +54,13 @@ static const struct rte_eth_conf mehcached_port_conf = {
 	.rxmode = {
         .max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.header_split   = 0, /**< Header Split disabled. */
+		.hw_ip_checksum = 0, /**< IP checksum offload disabled. */
+		.hw_vlan_filter = 1, /**< VLAN filtering enabled. */
+		.hw_vlan_strip  = 1, /**< VLAN strip enabled. */
+		.hw_vlan_extend = 0, /**< Extended VLAN disabled. */
+		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled. */
+		.hw_strip_crc   = 0, /**< CRC stripped by hardware disabled. */
 		.mq_mode = ETH_MQ_RX_NONE,
 	},
 	.txmode = {
@@ -83,8 +87,8 @@ static const struct rte_eth_rxconf mehcached_rx_conf = {
 		.hthresh = MEHCACHED_RX_HTHRESH,
 		.wthresh = MEHCACHED_RX_WTHRESH,
 	},
-	.rx_free_thresh = 32,	// for DPDK >= 1.3
-	.rx_drop_en = 0,		// (does not seem to be used)
+	.rx_free_thresh = 0,
+	.rx_drop_en = 0,
 };
 
 static const struct rte_eth_txconf mehcached_tx_conf = {
@@ -374,21 +378,28 @@ mehcached_init_network(uint64_t cpu_mask, uint64_t port_mask, uint8_t *out_num_p
 	// initialize pktmbuf
 	for (i = 0; i < num_numa_nodes; i++)
 	{
-		printf("allocating pktmbuf on node %zu... \n", i);
+		//const unsigned int desc_per_queue = (unsigned int)mehcached_next_power_of_two((size_t)mehcached_num_rx_desc + (size_t)mehcached_num_tx_desc + MEHCACHED_MAX_PKT_BURST);
+		const unsigned int desc_per_queue = (unsigned int)((size_t)mehcached_num_rx_desc + (size_t)mehcached_num_tx_desc + MEHCACHED_MAX_PKT_BURST);
+		const unsigned int mbuf_size = MEHCACHED_MAX_PORTS * MEHCACHED_MAX_QUEUES * desc_per_queue;
+		const size_t total_size = (size_t)mbuf_size * (size_t)((MEHCACHED_MBUF_ENTRY_SIZE + 63) / 64 * 64);
+
+		const unsigned int cache_size = MEHCACHED_MAX_PORTS * desc_per_queue;
+
+		printf("allocating pktmbuf on node %zu (total size: %.2lf MiB, cache count: %u)...\n", i, (double)total_size / 1048576., cache_size);
 		char pool_name[64];
 		snprintf(pool_name, sizeof(pool_name), "pktmbuf_pool%zu", i);
 		// if this is not big enough, RX/TX performance may not be consistent, e.g., between CREW and CRCW experiments
 		// the maximum cache size can be adjusted in DPDK's .config file: CONFIG_RTE_MEMPOOL_CACHE_MAX_SIZE
-		const unsigned int cache_size = MEHCACHED_MAX_PORTS * 1024;
-		mehcached_pktmbuf_pool[i] = rte_mempool_create(pool_name, MEHCACHED_MBUF_SIZE, MEHCACHED_MBUF_ENTRY_SIZE, cache_size, sizeof(struct rte_pktmbuf_pool_private), rte_pktmbuf_pool_init, NULL, rte_pktmbuf_init, NULL, (int)i, 0);
+		mehcached_pktmbuf_pool[i] = rte_mempool_create(pool_name, mbuf_size, MEHCACHED_MBUF_ENTRY_SIZE, cache_size, sizeof(struct rte_pktmbuf_pool_private), rte_pktmbuf_pool_init, NULL, rte_pktmbuf_init, NULL, (int)i, 0);
 		if (mehcached_pktmbuf_pool[i] == NULL)
 		{
-			fprintf(stderr, "failed to allocate mbuf for numa node %zu\n", i);
+			fprintf(stderr, "failed to allocate mbuf for numa node %zu (error: %s)\n", i, rte_strerror(rte_errno));
 			return false;
 		}
 	}
 
 	// initialize driver
+/*
 #ifdef RTE_LIBRTE_IXGBE_PMD
 	printf("initializing PMD\n");
 	if (rte_ixgbe_pmd_init() < 0)
@@ -404,11 +415,13 @@ mehcached_init_network(uint64_t cpu_mask, uint64_t port_mask, uint8_t *out_num_p
 		fprintf(stderr, "failed to probe PCI\n");
 		return false;
 	}
+*/
 
 	// TODO: initialize and set up timer for forced TX
 
 	// check port and queue limits
 	uint8_t num_ports = rte_eth_dev_count();
+	printf("found %hu ports\n", num_ports);
 	assert(num_ports <= MEHCACHED_MAX_PORTS);
 	*out_num_ports = num_ports;
 

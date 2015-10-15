@@ -66,11 +66,22 @@ mehcached_print_array_normalized(uint64_t arr[], size_t num_elements)
 	for (i = 0; i < num_elements; i++)
 	{
 		printf("[%3zu]%lf", i, (double)arr[i] / (double)max_elem);
-		if (i % 8 != 7)
+		if (i % 8 != 7) 
 			printf(" ");
-		else if (i != num_elements - 1)
-			printf("\n");
+	        else if (i != num_elements - 1)
+			printf("\n"); 
 	}
+	/*
+	printf("\n");
+	for (i = 0; i < num_elements; i++) //single line, seperate by blank space, for easy post processing for load CDF
+	{
+		printf("%lf", (double)arr[i] / (double)max_elem);
+		// if (i % 8 != 7) 
+			printf(" ");
+		//else if (i != num_elements - 1) 
+		//	printf("\n");
+	}
+	*/
 	printf("\n");
 	printf("min = %lf\n", (double)min_elem / (double)max_elem);
 	printf("avg = %lf\n", (double)sum_elem / (double)max_elem / (double)num_elements);
@@ -284,9 +295,9 @@ mehcached_benchmark_analysis(uint64_t num_hot_items, double zipf_theta, double g
 	printf("\n");
 
 	uint8_t num_numa_nodes = 2;
-	uint8_t num_threads = 16;
+	uint8_t num_threads = 24;
 	//uint16_t num_partitions = 64;
-	uint16_t num_partitions = 16;
+	uint16_t num_partitions = 24;
 	uint64_t num_items = 192 * 1048576;
 
 	uint64_t partition_load[num_partitions];
@@ -315,7 +326,9 @@ mehcached_benchmark_analysis(uint64_t num_hot_items, double zipf_theta, double g
 		key = mehcached_zipf_next(&zipf_state);
 
 		key_hash = mehcached_hash_key(key);
-	    partition_id = (uint16_t)(key_hash >> 48) & (uint16_t)(num_partitions - 1);
+	    //partition_id = (uint16_t)(key_hash >> 48) & (uint16_t)(num_partitions - 1);
+		// for non power-of-two num_partitions
+	    partition_id = (uint16_t)(key_hash >> 48) % (uint16_t)num_partitions;
 
 	    if (key < num_hot_items)
 		    hot_item_load[key]++;
@@ -341,7 +354,9 @@ mehcached_benchmark_analysis(uint64_t num_hot_items, double zipf_theta, double g
 	for (key = 0; key < num_hot_items; key++)
 	{
 		key_hash = mehcached_hash_key(key);
-	    partition_id = (uint16_t)(key_hash >> 48) & (uint16_t)(num_partitions - 1);
+	    //partition_id = (uint16_t)(key_hash >> 48) & (uint16_t)(num_partitions - 1);
+		// for non power-of-two num_partitions
+	    partition_id = (uint16_t)(key_hash >> 48) % (uint16_t)num_partitions;
 	    hot_item_to_thread_org[key] = partition_to_thread_org[partition_id];
 	    hot_item_to_thread_new[key] = hot_item_to_thread_org[key];
 	}

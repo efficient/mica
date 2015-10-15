@@ -10,7 +10,7 @@ Hardware Requirements
  * Dual CPU system
  * Intel 10 GbE NICs
  * Note: The current codebase has several assumptions on the hardware configuration of the server and clients.
-         It runs ideally on a dual octa-core server with 4 dual-port 10 GbE NICs, and clients with 2 dual-port 10 GbE NICs.
+         It runs ideally on a dual 12-core server with 4 quad-port 10 GbE NICs, and clients with 4 quad-port 10 GbE NICs.
 
 
 Software Requrements
@@ -18,8 +18,10 @@ Software Requrements
 
  * linux x86_64 >= 3.2.0
  * gcc >= 4.6.0
- * Python >= 2.7.0
- * Intel DPDK >= 1.5.0
+ * Python >= 2.6.0
+ * Intel DPDK = 1.8.0-rc1
+ * libmemcached (dev, tools) >= 0.44 (libmemcached-devel in CentOS)
+ * memcached >= 1.4
  * bash >= 4.0.0
  * cmake >= 2.6.0
  * Hugepage (2 GiB) support
@@ -45,7 +47,7 @@ Compiling Executables
 
 	# unpack DPDK as "DPDK" to the directory containing mica
 	$ cd mica/build
-	$ ../scripts/setup_dkdp_env.sh	# this uses sudo
+	$ ../scripts/setup_dpdk_env.sh unified	# this uses sudo;
 	$ ../configure_all.sh
 	$ make
 
@@ -56,15 +58,15 @@ Generating Configuration Files
 	# conf_* files determine how MICA uses system resources. build/gen_confs.py generates a preset of configuration files for a 16-core server and 12-core clients
 	# in mica
 	$ ./run_analysis_for_conf.py	# this uses sudo
-	$ ./gen_confs.py
+	$ ./gen_confs.py 
 
 
 Running a Server
 ----------------
 
 	# in mica/build
-	$ sudo ./netbench_server conf_machines_DATASET_CMODE_0.5 server 0 0 conf_prepopulation_empty
-	# DATASET=0,1,2 (used to determine how much memory to allocate); CMODE=EREW,CREW,CRCWS (specifies the data access mode)
+	$ sudo ./netbench_server conf_machines_DATASET_CMODE_0.5 server 0 0 conf_prepopulation_WarmupDataSet 
+	# DATASET=0,1,2 (used to determine how much memory to allocate); CMODE=EREW,CREW,CRCWS (specifies the data access mode); WarmupDataSet = 0, 1, 2, empty (use different dataset to pre-warmup memory content, empty means no warmup and key-values are inserted with empty table on server) 
 
 
 Running a Client (e.g., client0)
@@ -83,10 +85,17 @@ Running a Local Microbenchmark
 	# CMODE=EREW,CREW,CRCWS (specifies the data acces mode); SKEWNESS=0(uniform),0.99(skewed),99(single) (specifies the workload skew)
 
 
+Contributors
+------------
+
+ * Hyeontaek Lim (CMU)
+ * Sheng Li (Intel Labs)
+
+
 License
 -------
 
-	Copyright 2014 Carnegie Mellon University
+	Copyright 2014, 2015 Carnegie Mellon University
 
 	Licensed under the Apache License, Version 2.0 (the "License");
 	you may not use this file except in compliance with the License.
