@@ -20,8 +20,6 @@ Software Requrements
  * gcc >= 4.6.0
  * Python >= 2.6.0
  * Intel DPDK = 1.8.0-rc1
- * libmemcached (dev, tools) >= 0.44 (libmemcached-devel in CentOS)
- * memcached >= 1.4
  * bash >= 4.0.0
  * cmake >= 2.6.0
  * Hugepage (2 GiB) support
