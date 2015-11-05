@@ -589,6 +589,7 @@ benchmark(const concurrency_mode_t concurrency_mode, double zipf_theta, double m
         {
             args[thread_id].op_count = op_count[thread_id];
             args[thread_id].benchmark_mode = benchmark_mode;
+            args[thread_id].concurrency_mode = concurrency_mode;
             args[thread_id].junk = 0;
             args[thread_id].success_count = 0;
         }
