@@ -25,7 +25,7 @@
 #include "mehcached.h"
 #include "hash.h"
 #include "zipf.h"
-#include "trace.h"
+//#include "trace.h"
 #include "stopwatch.h"
 #include "netbench_config.h"
 #include "net_common.h"
