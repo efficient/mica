@@ -183,15 +183,15 @@ if(NOT "${NSERVER}" STREQUAL "yes")
 	set_target_properties(netbench_server_store PROPERTIES COMPILE_FLAGS "-DMEHCACHED_NO_EVICTION")
 	target_link_libraries(netbench_server_store ${LIBRARIES})
 
-	if(NOT "${NSERVER_3RD}" STREQUAL "yes")
-		# netbench_server_memcached
-		add_executable(netbench_server_memcached net_common.c netbench_config.c netbench_server.c ${SOURCES})
-		set_target_properties(netbench_server_memcached PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/../../memcached/ -DNETBENCH_SERVER_MEMCACHED")
-		target_link_libraries(netbench_server_memcached ${LIBRARIES} ${CMAKE_CURRENT_SOURCE_DIR}/../../memcached/libmemcached_export.a event rt)
+	# if(NOT "${NSERVER_3RD}" STREQUAL "yes")
+	# 	# netbench_server_memcached
+	# 	add_executable(netbench_server_memcached net_common.c netbench_config.c netbench_server.c ${SOURCES})
+	# 	set_target_properties(netbench_server_memcached PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/../../memcached/ -DNETBENCH_SERVER_MEMCACHED")
+	# 	target_link_libraries(netbench_server_memcached ${LIBRARIES} ${CMAKE_CURRENT_SOURCE_DIR}/../../memcached/libmemcached_export.a event rt)
 
-		# netbench_server_memc3
-		add_executable(netbench_server_memc3 net_common.c netbench_config.c netbench_server.c ${SOURCES})
-		set_target_properties(netbench_server_memc3 PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/../../memcached-bin/ -DNETBENCH_SERVER_MEMCACHED")
-		target_link_libraries(netbench_server_memc3 ${LIBRARIES} ${CMAKE_CURRENT_SOURCE_DIR}/../../memcached-bin/libmemcached_export.a event rt)
-	endif()
+	# 	# netbench_server_memc3
+	# 	add_executable(netbench_server_memc3 net_common.c netbench_config.c netbench_server.c ${SOURCES})
+	# 	set_target_properties(netbench_server_memc3 PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/../../memcached-bin/ -DNETBENCH_SERVER_MEMCACHED")
+	# 	target_link_libraries(netbench_server_memc3 ${LIBRARIES} ${CMAKE_CURRENT_SOURCE_DIR}/../../memcached-bin/libmemcached_export.a event rt)
+	# endif()
 endif()
